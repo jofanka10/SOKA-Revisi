@@ -1,10 +1,17 @@
-# Minimum Completion Time (MCT) - Cloud Task Scheduling
+# Uji Coba Skala Dataset — Penjadwalan Task Cloud (MCT, FCFS, Min-Min)
 
-Implementasi dan ujicoba algoritma **Minimum Completion Time (MCT)** untuk penjadwalan task independen di lingkungan cloud tersimulasi, menggunakan [CloudSim Plus](http://cloudsimplus.org/) 7.3.0. Dibuat untuk mata kuliah SOKA, Tugas Minggu 4.
+Revisi Tugas MCT (Minggu 4) mata kuliah **SOKA — Strategi Optimasi Komputasi Awan**, Kelompok 2.
+Implementasi menggunakan **CloudSim Plus 7.3.0** dengan Java 17.
 
-Dua algoritma pembanding, yaitu FCFS dan Min-Min turut diimplementasikan untuk memperkuat analisis perbandingan.
+Revisi ini menjawab tiga catatan dosen terhadap laporan sebelumnya (poin 1–3 di bawah), ditambah kelengkapan kode beserta langkah menjalankannya dan satu koreksi internal pada rumus *Degree of Imbalance* (lihat §2):
 
-## **Kelompok 2**
+1. **Skala uji coba diperluas**: n = 100 s.d. 10.000 task (kelipatan 100), tiap skala **diulang 3 kali** (dataset sintetis seed 1/2/3), diambil **rata-rata**, lalu dibuat grafik.
+2. **Kriteria dataset diatur sendiri**: dataset sintetis dibangkitkan sendiri (3 seed), bukan hanya GoCJ.
+3. **Alokasi VM ke infrastruktur dieksplisitkan**: VM didistribusikan bergiliran ke semua datacenter, lalu ditempatkan ke host menggunakan kebijakan First-Fit yang dipasang eksplisit.
+
+---
+
+## 1. Anggota Kelompok
 
 | No | Nama                              | NRP        |
 |----|-----------------------------------|------------|
@@ -14,318 +21,357 @@ Dua algoritma pembanding, yaitu FCFS dan Min-Min turut diimplementasikan untuk m
 | 4  | Angga Firmansyah                  | 5027241062 |
 | 5  | Jofanka Al-kautsar Pangestu Abady | 5027241107 |
 
-## **Daftar Isi**
+---
 
-- [Algoritma](#algoritma)
-- [Arsitektur Simulasi](#arsitektur-simulasi)
-- [Revisi Minggu 4](#revisi-minggu-4)
-- [Dataset](#dataset)
-- [Cara Menjalankan](#cara-menjalankan)
-- [Hasil Ujicoba](#hasil-ujicoba)
-- [Validasi](#validasi)
-- [Struktur Repo](#struktur-repo)
-- [Keterbatasan](#keterbatasan)
-- [Real World Scenario](#real-world-scenario)
-- [Referensi](#referensi)
+## 2. Perubahan dari Versi Sebelumnya (Catatan Revisi)
 
-## Algoritma
+| # | Revisi diminta | Sebelumnya | Sekarang |
+|---|----------------|------------|----------|
+| 1 | Uji coba 100–10.000 task (kelipatan 100), 3 kali pengujian, rata-rata, dimasukkan ke grafik | Hanya 1.000 task, 1 run per algoritma | 100 skala × 3 seed × 3 algoritma = **900 run**; rata-rata per skala digrafikkan (`chart_*.png`) |
+| 2 | Kriteria dataset diatur sendiri | GoCJ bawaan | Dataset **sintetis dibangkitkan sendiri** dari kriteria yang didefinisikan sendiri (3 kelas beban, proporsi & rentang MI ditentukan tim), reproducible lewat `SyntheticDatasetGenerator.java` |
+| 3 | 1 host diisi 4 VM, jangan random; jangan diserahkan ke CloudSim langsung | Penempatan VM diserahkan ke `DatacenterSimple` (kebijakan default bawaan) | VM dibagi bergiliran ke seluruh datacenter; di tiap datacenter, `VmAllocationPolicyFirstFit` dipasang **eksplisit** untuk memilih host. Merevisi draft §3.1 |
+| 4 | Kode lengkap + step-by-step | — | Bab 6 dan 7 dokumen ini |
+| 5 | **Koreksi internal:** rumus *Degree of Imbalance* | Rata-rata *finish time* seluruh cloudlet dibagi jumlah VM → DI antar-algoritma nyaris identik (tidak informatif) | DI dihitung dari **total waktu CPU aktif per VM** lintas semua PE, mengikuti definisi `(max Tj − min Tj) / mean Tj` — lihat §5 |
 
-**Minimum Completion Time (MCT)** memproses task satu per satu sesuai urutan kedatangan, dan memetakan setiap task ke VM yang memberikan *completion time* paling awal.
+Selain itu, dari daftar keterbatasan versi sebelumnya yang kini terjawab:
 
-```math
-CT(T_i, V_j) = RT(V_j) + ET(T_i, V_j)
-```
+- Skenario ukuran dataset bervariasi (n = 100 ... 10.000) **sudah dijalankan**.
+- Variansi antar-run (repeat) **sudah diukur** (mean ± std, lihat `summary.csv`).
 
-- $`RT(V_j)`$ : ready time VM j (kapan VM tersebut bebas)
-- $`ET(T_i, V_j)`$ : waktu eksekusi task i pada VM j = $\mathrm{length}(T_i) / \mathrm{MIPS}(V_j)$
-- Jika beberapa VM memberi CT yang sama, dipilih VM dengan **indeks terkecil**
+---
 
-```
-ready[j] = 0 untuk setiap VM j
-U = daftar task, terurut sesuai urutan kedatangan
+## 3. Arsitektur Simulasi
 
-untuk setiap task i di U:
-    untuk setiap VM j:
-        CT[i][j] = ready[j] + ET(i, j)
-    j* = argmin_j( CT[i][j] )     // jika seri: indeks j terkecil
-    tugaskan task i ke VM j*
-    ready[j*] = CT[i][j*]
-
-makespan = max_j( ready[j] )
-```
-
-MCT dipilih sebagai algoritma utama karena (1) memperhitungkan beban VM saat ini sehingga lebih adaptif pada lingkungan heterogen dibanding FCFS, dan (2) kompleksitasnya `O(n·m)` lebih ringan dibanding Min-Min yang `O(n²·m)`.
-
-| Algoritma | Cara memilih | Kompleksitas |
-|---|---|---|
-| **MCT** (utama) | VM dengan completion time paling awal, per task sesuai urutan | $O(n \cdot m)$ |
-| FCFS (baseline) | VM dengan ready time tercepat, tanpa melihat lama eksekusi | $\sim O(n)$ |
-| Min-Min (pembanding) | Dari semua task tersisa, pilih completion time minimum paling kecil dulu | $O(n^2 \cdot m)$ |
-
-## **Arsitektur Simulasi**
-
-Mengikuti spesifikasi Draft Design Project (Tugas Minggu 3), dengan revisi Minggu 4
-(lihat [Revisi Minggu 4](#revisi-minggu-4)):
+Konfigurasi bawaan `BatchRunner.java`:
 
 | Entitas | Jumlah | Spesifikasi |
 |---|---|---|
-| Datacenter | 1 | `DatacenterSimple` dengan `VmAllocationPolicyFirstFit` dipasang **eksplisit** (draft §3.1 semula memakai default CloudSim; direvisi sesuai catatan dosen) |
-| Host | 2 | Identik, sesuai draft Tabel 4: 8 PE × 100.000 MIPS, RAM 32.000 MB. Keempat VM ditempatkan ke Host 0; Host 1 cadangan |
-| VM | 4 | Small 1.000 / Medium 2.500 / Large 5.000 / XLarge 7.500 MIPS — 1 PE, RAM 4.096 MB, `SpaceShared` |
-| Cloudlet | 1.000 (single-run) / 100–10.000 (batch sweep, lihat `SOKA_v2/`) | 1 PE per task, `UtilizationModelDynamic(1.0)` |
+| Datacenter | 2 | Dibuat dari entri `DC_SPECS`, masing-masing dengan `VmAllocationPolicyFirstFit` |
+| Host | 2 di DC 1; 3 di DC 2 | DC 1: 8 PE × 100.000 MIPS; DC 2: 4 PE × 50.000 MIPS; RAM 32.000/16.000 MB |
+| VM | 4 | Small 1.000 / Medium 2.500 / Large 5.000 / XLarge 7.500 MIPS per PE; 2/2/2/4 PE; RAM 4.096 MB, `CloudletSchedulerSpaceShared` |
+| Cloudlet | 100–10.000 | 1 PE per task; CPU penuh, RAM/BW dibagi berdasarkan jumlah PE VM tujuan |
 
-## **Revisi Minggu 4**
+### 3.1 Alokasi VM ke Datacenter dan Host
 
-Menjawab catatan revisi terhadap laporan Minggu 4:
+Setiap entri pada `DC_SPECS` membentuk satu datacenter. `BatchRunner` mengarahkan VM secara
+bergiliran ke datacenter yang berbeda (VM 0 ke DC 1, VM 1 ke DC 2, lalu berulang), sehingga
+semua datacenter menerima VM selama jumlah VM setidaknya sama dengan jumlah datacenter.
+Jika datacenter pilihan tidak dapat membuat VM, broker mencoba datacenter berikutnya.
 
-| # | Revisi diminta | Sekarang |
-|---|---|---|
-| 1 | Uji coba 100–10.000 task (kelipatan 100), 3 kali, rata-rata, digrafikkan | `SOKA_v2/BatchRunner.java`: 100 skala × 3 seed × 3 algoritma = 900 run + grafik (lihat `SOKA_v2/`) |
-| 2 | Kriteria dataset diatur sendiri | Dataset sintetis dengan kriteria sendiri (3 kelas beban Short/Medium/Long, proporsi & rentang MI ditentukan tim, **bukan** meniru GoCJ), reproducible lewat `SOKA_v2/SyntheticDatasetGenerator.java` |
-| 3 | 1 host diisi 4 VM, tidak random; jangan diserahkan ke CloudSim langsung | Topologi **tetap 2 Host × 8 PE** (sesuai draft Tabel 3–4). Penempatan VM kini **eksplisit**: `VmAllocationPolicyFirstFit` dipasang di `DatacenterSimple` pada **seluruh** simulasi (`MctSimulation`, `FcfsSimulation`, `MinMinSimulation`, `BatchRunner`), sehingga keempat VM selalu mendarat di Host 0 (deterministik) dan Host 1 menjadi cadangan. Penempatan dicetak/diperiksa tiap run. Ini merevisi draft §3.1 yang semula memakai kebijakan default |
-| 4 | **(koreksi internal)** rumus Degree of Imbalance | Semula memakai rata-rata *finish time* seluruh cloudlet → DI antar-algoritma nyaris identik. Kini memakai total **busy time per VM** (`ready[]`): `(max Tj − min Tj) / mean Tj` |
+Di dalam setiap datacenter, `VmAllocationPolicyFirstFit` menempatkan VM pada host pertama
+yang memiliki kapasitas cukup. `BatchRunner` mencetak `[PERINGATAN]` bila VM gagal dialokasikan
+atau ada datacenter yang tidak menerima VM. Membagi VM yang sama ke beberapa datacenter tidak
+otomatis meningkatkan performa: total kapasitas komputasi VM tetap sama, kecuali jumlah atau
+spesifikasi VM juga diubah.
 
-Detail lengkap (kriteria dataset, hasil sweep, grafik) ada di [`SOKA_v2/README.md`](SOKA_v2/README.md).
-
-## **Dataset**
-
-Dua dataset dipakai: **GoCJ** untuk single-run 1.000 task (bagian ini), dan **dataset sintetis buatan sendiri** untuk sweep n = 100–10.000 (kriteria dan generator di [`SOKA_v2/README.md`](SOKA_v2/README.md) §4).
-
-**GoCJ (Google Cloud Jobs)** — Hussain & Aleem (2018), [Mendeley Data](https://data.mendeley.com/datasets/b7bp6xhrcd/1). Ukuran job dalam Million Instructions (MI), dibangkitkan dari analisis Google cluster trace.
-
-File yang dipakai: `GoCJ_1000_task_simulation.csv` — 1.000 task, hanya kolom `lengthMI` yang dipakai.
-
-| Statistik | Nilai |
-|---|---|
-| Minimum / Maksimum | 15.000 / 900.000 MI |
-| Median / Rata-rata | 89.000 / 121.815 MI |
-| Total beban | 121.815.000 MI |
-| Batas bawah teoritis makespan | ΣMI / ΣMIPS ≈ **7.613,44 detik** |
-
-## Cara Menjalankan
-
-Prasyarat: Java 17, Maven. Langkah di bawah untuk single-run (GoCJ, 1.000 task); sweep n = 100–10.000 dijelaskan di [`SOKA_v2/README.md`](SOKA_v2/README.md) §7.
-
-```bash
-mvn compile
-mvn exec:java -Dexec.mainClass="MctSimulation"
-mvn exec:java -Dexec.mainClass="FcfsSimulation"
-mvn exec:java -Dexec.mainClass="MinMinSimulation"
-```
-
-Setiap run membaca `GoCJ_1000_task_simulation.csv` dan menulis hasil ke `Hasil_Simulasi_<Algoritma>_<timestamp>.csv` berisi `Cloudlet_ID, Status, VM_ID, Actual_CPU_Time, Start_Time, Finish_Time` per task, ditutup satu baris ringkasan makespan.
-
-## Hasil Ujicoba
-
-Seluruh 1.000 cloudlet berstatus **SUCCESS** pada ketiga run.
-
-| Algoritma | Makespan (detik) | Selisih thd batas bawah | Distribusi VM (Small/Medium/Large/XLarge) |
-|---|---|---|---|
-| **MCT** | **7.690,06** | +1,01% | 137 / 236 / 352 / 275 |
-| FCFS | 7.724,00 | +1,46% | 49 / 148 / 328 / 475 |
-| Min-Min | 7.781,37 | +2,20% | 61 / 155 / 313 / 471 |
-
-**Peringkat:** MCT < FCFS < Min-Min. Selisih antar-algoritma kecil (<1,2%), ketiganya berada dalam 1-2,2% dari batas bawah teoritis.
-
-Metrik tambahan untuk MCT:
-
-| Metrik | Nilai |
-|---|---|
-| Degree of Imbalance | 0,011 |
-| Resource Utilization | 99,1% |
-| Throughput | 0,13 task/detik |
-
-### Temuan menarik: Min-Min sedikit lebih lambat dari FCFS
-
-Berlawanan dengan ekspektasi umum, Min-Min (7.781,37 detik) tampil sedikit di bawah FCFS (7.724,00 detik) pada dataset ini. Ini konsisten dengan kelemahan Min-Min yang terdokumentasi di literatur (Braun et al., 2001): Min-Min cenderung memprioritaskan task kecil berturut-turut ke VM tercepat, sehingga VM tersebut menumpuk banyak task. Dataset GoCJ bersifat *right-skewed* (919 dari 1.000 task ≤ 135.000 MI, 63 task > 500.000 MI), yang kemungkinan memperkuat efek ini.
-
-## **Validasi**
-
-Setiap algoritma direplikasi manual (Python, logika identik dengan kode Java) dan dibandingkan dengan hasil CloudSim Plus:
-
-| Algoritma | Manual | CloudSim Plus | Selisih |
-|---|---|---|---|
-| MCT | 7.634,80 | 7.690,06 | 0,72% |
-| FCFS | 7.628,47 | 7.724,00 | 1,25% |
-| Min-Min | 7.686,67 | 7.781,37 | 1,23% |
-
-Selisih 0,7-1,3% konsisten di ketiganya, sejalan dengan jeda minimum antar-event bawaan CloudSim Plus (`minTimeBetweenEvents` = 0,1 detik). Khusus MCT, pemetaan task→VM hasil hitungan manual dibandingkan satu per satu dengan keluaran simulator: **kecocokan 100%**.
-
-## **Struktur Repo**
-
-```
-├── src/main/java/
-│   ├── MctSimulation.java      # algoritma utama
-│   ├── FcfsSimulation.java     # baseline
-│   └── MinMinSimulation.java   # pembanding
-├── GoCJ_1000_task_simulation.csv        # dataset
-├── Hasil_Simulasi_MCT_*.csv             # hasil run MCT
-├── Hasil_Simulasi_FCFS_*.csv            # hasil run FCFS
-├── Hasil_Simulasi_MinMin_*.csv          # hasil run Min-Min
-├── pom.xml
-└── SOKA_v2/                             # REVISI Minggu 4 (uji coba skala)
-    ├── SyntheticDatasetGenerator.java   # generator dataset sintetis (kriteria sendiri)
-    ├── BatchRunner.java                 # sweep n=100–10.000, 3 seed, 3 algoritma
-    ├── plot_results.py                  # 5 grafik + summary.csv
-    ├── Dataset-Sintetik/                # synthetic_seed1..3.csv
-    ├── results.csv / summary.csv        # hasil sweep
-    ├── chart_*.png                      # 5 grafik
-    └── README.md                        # dokumentasi lengkap revisi (cara menjalankan, hasil, analisis)
-```
-
-## **Keterbatasan**
-
-- **Total cost (F2)** belum dihitung untuk ketiga algoritma; baru makespan (F1), imbalance (F3), utilization, dan throughput yang terukur lengkap.
-- Konfigurasi homogen (4 VM identik) belum dijalankan.
-- Waktu komputasi algoritma belum diukur secara eksplisit.
-- Ujicoba real-world penuh (1.000 task, beberapa putaran) belum selesai; baru uji awal 50 task (lihat [Real World Scenario](#real-world-scenario)).
-- Penempatan VM→host tidak memengaruhi makespan karena kapasitas host jauh melampaui kebutuhan 4 VM dan mapping task→VM dihitung di layer aplikasi, bukan oleh CloudSim.
-
-
-## **Real World Scenario**
-
-> **Status:** uji awal 50 task sudah dijalankan; run penuh 1.000 task belum (nilai `TBD` di bawah). Skrip `dispatcher.py`, `worker.py`, dan `summarize.py` tidak termasuk di repo ini.
-
-Setelah melakukan simulasi melalui CloudSim, kita dapat melakuakn pengujian secara real world menggunakan Docker. Untuk arsitekturnya sebagai berikut.
-
-```text
-               dispatcher.py
-       (assign: MCT / FCFS / Min-Min)
-                      │
-     ┌──────────┬─────┴────┬──────────┐
-     ▼          ▼          ▼          ▼
-┌─────────┐┌─────────┐┌─────────┐┌─────────┐
-│   VM-0  ││   VM-1  ││   VM-2  ││   VM-3  │
-│0,133 CPU││0,333 CPU││0,667 CPU││1,000 CPU│
-│worker.py││worker.py││worker.py││worker.py│
-└─────────┘└─────────┘└─────────┘└─────────┘
-     │          │          │          │
-     └──────────┴─────┬────┴──────────┘
-                      ▼
-        start/end tiap task → metrik
-```
-
-- **VM** = container Docker `python:3.12-slim` dengan batas CPU (`--cpus`) yang rasionya sama dengan MIPS di simulasi.
-- **Dispatcher** (`dispatcher.py`) menghitung penjadwalan, mengirim daftar task ke tiap worker lewat `stdin`, lalu mengumpulkan waktu mulai dan selesai tiap task.
-- **Worker** (`worker.py`) mengeksekusi task dengan menghabiskan CPU time. Karena CPU container dibatasi, container yang lebih lambat otomatis membutuhkan waktu lebih lama (CFS throttling).
-
-| VM | MIPS | `--cpus` |
-|---|---|---|
-| VM-0 | 1.000 | 0,133333 |
-| VM-1 | 2.500 | 0,333333 |
-| VM-2 | 5.000 | 0,666667 |
-| VM-3 | 7.500 | 1,000000 |
-
-### Model task
-
-Satu task dengan panjang $L_i$ (MI) membutuhkan CPU time pada satu core penuh:
-
-$$\text{CPU time} = \frac{L_i}{7500 \cdot S}$$
-
-dengan $S = 50$ sebagai faktor percepatan waktu, agar satu run penuh cukup sekitar 2,5 menit dan bukan 7.690 detik. Seluruh waktu hasil pengukuran dikalikan kembali dengan $S$, sehingga bisa dibandingkan langsung dengan CloudSim (satuan detik simulasi).
-
-### Algoritma
-
-Waktu eksekusi dan waktu selesai task $T_i$ pada VM $V_j$:
-
-$$ET(T_i, V_j) = \frac{\mathrm{length}(T_i)}{\mathrm{MIPS}(V_j)}$$
-
-$$CT(T_i, V_j) = RT(V_j) + ET(T_i, V_j)$$
+### 3.2 Algoritma yang dibandingkan
 
 | Algoritma | Aturan pemilihan | Kompleksitas |
 |---|---|---|
-| FCFS | VM dengan $RT$ terkecil, tanpa melihat durasi task | $\sim O(n)$ |
-| MCT | VM dengan $CT(T_i, V_j)$ terkecil untuk tiap task | $O(n \cdot m)$ |
-| Min-Min | pasangan (task, VM) dengan $CT$ global terkecil, diulang | $O(n^2 \cdot m)$ |
+| **MCT** (utama) | Tiap task (sesuai urutan kedatangan) diassign ke slot PE dengan *completion time* paling awal: `CT = ready(PE) + length/MIPS-per-PE` | `O(n·P)` |
+| FCFS (baseline) | Tiap task diassign ke slot PE yang paling cepat tersedia, tanpa melihat panjang task | `O(n·P)` |
+| Min-Min (pembanding) | Dari semua task tersisa, pasangan (task, slot PE) dengan CT global terkecil dikerjakan duluan; diulang hingga habis | `O(n²·m + n·P)` |
 
-### Metrik
+Penjadwalan ketiganya dihitung **di luar event engine CloudSim** (layer aplikasi), lalu hasil
+mapping task→VM diserahkan ke simulator untuk eksekusi. `P` adalah jumlah seluruh PE pada VM
+dan `m` jumlah VM. VM multi-PE menambah jumlah task yang dapat berjalan bersamaan; MIPS per
+PE tetap menjadi kecepatan tiap task.
 
-- **Makespan** = $\max_j F_j$, dengan $F_j$ waktu selesai VM $V_j$.
-- **Degree of Imbalance** $DI = \dfrac{\max_j F_j - \min_j F_j}{\overline{F}}$
-- **Utilization** = total waktu sibuk seluruh VM / ($m \cdot$ makespan)
-- **Throughput** = jumlah task / makespan
+Cloudlet meminta RAM dan bandwidth sebesar `99% / jumlah PE VM tujuan` masing-masing.
+Ini asumsi model agar beberapa task 1-PE yang berjalan serentak tidak meminta lebih dari
+kapasitas VM; ganti proporsi tersebut jika ada data kebutuhan RAM/BW task yang lebih realistis.
 
-### Cara menjalankan
+---
 
-Prasyarat: Docker Desktop (alokasikan CPU ≥ 4 core), Python 3, dan `pip install pandas`.
+## 4. Dataset Sintetis
 
-```bash
-docker pull python:3.12-slim
-python dispatcher.py mct 50      # uji kecil: algoritma + jumlah task
+Dataset **dibangkitkan sendiri** lewat `SyntheticDatasetGenerator.java` (bukan meniru statistik
+GoCJ), supaya kriteria beban bisa dijelaskan dan hasilnya reproducible.
+
+### 4.1 Kriteria dataset (diatur sendiri)
+
+Beban kerja dimodelkan **tri-modal (right-skewed)**: mayoritas task pendek, sebagian menengah,
+dan ekor panjang yang jarang — meniru pola umum beban cloud, tetapi parameter angkanya kami
+tentukan sendiri:
+
+| Kelas beban | Proporsi | Rentang panjang (MI) | Rata-rata kelas (MI) |
+|---|---|---|---|
+| **Short** | 70% | 10.000 – 150.000 | 80.000 |
+| **Medium** | 20% | 200.000 – 450.000 | 325.000 |
+| **Long** | 10% | 500.000 – 1.000.000 | 750.000 |
+
+- Panjang task di tiap kelas **uniform integer** di dalam rentangnya.
+- Rata-rata dataset ≈ **193.000 – 198.000 MI/task**; kelas Short/Medium/Long tidak saling
+  tumpang tindih rentangnya.
+- **Reproducible**: `java.util.Random` dengan seed eksplisit **1 / 2 / 3**, sehingga dataset
+  yang sama selalu dihasilkan ulang (deterministik).
+
+Angka min/median/mean dataset ini **berbeda jelas** dari GoCJ asli (GoCJ: 15.000 / 89.000 /
+121.815 MI), jadi bukan resample dari GoCJ.
+
+**Alasan pemilihan kriteria.** Proporsi 70/20/10 dipilih agar mayoritas task pendek dan hanya
+sedikit task panjang (condong ke kanan / *right-skewed*), sejalan dengan rencana dataset sintetis
+right-skewed pada Draft Design §2.2. Rentang antar-kelas sengaja diberi celah (150.000–200.000
+dan 450.000–500.000 MI) supaya ketiga kelas terpisah jelas dan tidak tumpang tindih.
+
+### 4.2 File
+
+| File | Isi |
+|---|---|
+| `Dataset-Sintetik/synthetic_seed1.csv` | 10.000 task (seed 1) |
+| `Dataset-Sintetik/synthetic_seed2.csv` | 10.000 task (seed 2) |
+| `Dataset-Sintetik/synthetic_seed3.csv` | 10.000 task (seed 3) |
+
+- Format: `taskId,lengthMI` (panjang task dalam Million Instructions).
+- Untuk skala n, kode mengambil **n baris pertama** dari file seed terpilih.
+- Repetisi ke-1 memakai seed1, ke-2 seed2, ke-3 seed3 → rata-rata dari 3 seed
+  mengurangi bias urutan task pada satu dataset.
+
+### 4.3 Batas bawah teoritis makespan
+
+Makespan tidak mungkin di bawah `ΣMI / ΣMIPS-total`, dengan `ΣMIPS-total` menjumlahkan
+MIPS per PE untuk seluruh PE VM. Nilai kapasitas tersebut dicatat per run pada kolom
+`total_vm_mips` di `results.csv`, sehingga grafik mengikuti konfigurasi VM yang digunakan.
+
+---
+
+## 5. Metrik
+
+| Metrik | Rumus |
+|---|---|
+| **Makespan** | `max_j F(j)` — waktu selesai VM terakhir |
+| **Degree of Imbalance (DI)** | `(max_j Tj − min_j Tj) / mean_j Tj`, dengan `Tj` = total waktu **sibuk** VM j |
+| **Utilization** | `Σ busy time semua PE / (jumlah PE VM × makespan)` |
+| **Throughput** | `jumlah task / makespan` |
+
+> `Tj` dihitung sebagai total waktu CPU aktif per VM, dijumlahkan dari seluruh PE-nya.
+> Estimasi per-PE juga dipakai untuk pemetaan task agar VM multi-PE dapat menjalankan
+> beberapa task secara paralel.
+
+---
+
+## 6. Kode Lengkap
+
+Struktur folder `SOKA_v2`:
+
+```
+SOKA_v2/
+├── SyntheticDatasetGenerator.java  # generator dataset sintetis (kriteria §4.1, reproducible)
+├── BatchRunner.java      # kode lengkap: 2 host, 4 VM + 3 algoritma + sweep 900 run
+├── plot_results.py       # 5 grafik + summary.csv (mean ± std per skala)
+├── Dataset-Sintetik/     # synthetic_seed1..3.csv (10.000 task tiap file)
+├── results.csv           # 900 baris hasil mentah (3 algoritma × 100 skala × 3 repetisi)
+├── summary.csv           # rata-rata ± std per (algoritma, n)
+├── chart_makespan.png         # makespan vs n (garis hampir menumpuk, selisih antar-algoritma < 1%)
+├── chart_selisih_vs_mct.png   # selisih makespan FCFS & Min-Min terhadap MCT (%)
+├── chart_makespan_diff.png    # deviasi makespan terhadap batas bawah teoritis ΣMI/ΣMIPS (%)
+├── chart_imbalance.png        # degree of imbalance vs n
+└── chart_utilization.png      # utilization vs n
 ```
 
-Run penuh (3 putaran, urutan algoritma diselang-seling):
+`cp.txt` (classpath dependensi) dan `out/` (hasil compile) dibuat di komputer masing-masing
+dan **tidak disimpan di repo** (lihat §7 langkah 0–1).
+
+Kode sumber:
+
+- `SyntheticDatasetGenerator.java`: membangkitkan 3 file dataset (seed 1/2/3) sesuai kriteria
+  §4.1. Jalankan dengan `java -cp out SyntheticDatasetGenerator` (default: folder
+  `Dataset-Sintetik`, 10.000 task, 3 seed).
+- `BatchRunner.java`:
+  - Konfigurasi datacenter/host: `DC_SPECS`; spesifikasi VM: `VM_SPECS`.
+  - `runOnce(algo, n, csvFile)`: membangun semua datacenter dari `DC_SPECS`, mendistribusikan VM bergiliran ke seluruh datacenter, lalu menjalankan simulasi.
+  - `buildRunPlan()`: daftar (n, seed) untuk seluruh sweep — n kelipatan 100 hingga 10.000, 3 repetisi.
+  - `fcfsAssign / mctAssign / minMinAssign`: implementasi ketiga algoritma (Min-Min dioptimasi
+    dengan array boolean agar praktis untuk n = 10.000).
+  - `readCsv()`: pembaca dataset sintetis (kolom `lengthMI`).
+
+---
+
+## 7. Cara Menjalankan (Step by Step)
+
+### Prasyarat
+
+- **JDK 17** (`java -version` dan `javac -version` harus tersedia). CloudSim Plus 7.3.0 butuh
+  Java 11+, tapi konsisten dengan project lama gunakan 17.
+- **Maven** — hanya untuk mengunduh dependensi CloudSim Plus dan membuat `cp.txt` (langkah 0).
+- **Python 3 + matplotlib** untuk grafik: `pip install matplotlib`.
+- Tidak perlu IDE — cukup terminal, karena tidak ada GUI.
+
+### Langkah 0 — Buat `cp.txt` (sekali saja)
+
+`cp.txt` berisi path jar dependensi di komputer masing-masing, sehingga **tidak disimpan di repo**.
+Jalankan dari **root repo** (folder yang berisi `pom.xml`):
+
+```bash
+mvn dependency:build-classpath "-Dmdep.outputFile=SOKA_v2/cp.txt"
+```
+
+### Langkah 1 — Compile
+
+Dari folder `SOKA_v2`.
+
+Linux / macOS / WSL (bash):
+
+```bash
+cd SOKA_v2
+CP=$(cat cp.txt)
+javac -cp "$CP" -d out SyntheticDatasetGenerator.java BatchRunner.java
+```
+
+Windows (PowerShell):
 
 ```powershell
-1..3 | % { foreach($a in 'mct','fcfs','minmin'){ python dispatcher.py $a } }
-python summarize.py
+cd SOKA_v2
+$cp = (Get-Content cp.txt -Raw).Trim()
+javac -cp $cp -d out SyntheticDatasetGenerator.java BatchRunner.java
 ```
 
-Setiap run menulis `real_<algoritma>_<timestamp>.csv` (detail per task) dan menambah satu baris ke `results.csv`.
+### Langkah 2a — (Opsional) Bangkitkan ulang dataset sintetis
 
-### Validasi bahwa CPU limit bekerja
-
-Saat run berjalan, di terminal lain:
+Dataset sudah tersedia di `Dataset-Sintetik/`. Untuk membangkitkan ulang dari kriteria §4.1
+(hasil deterministik, sama persis). Folder tujuan harus sudah ada:
 
 ```bash
-docker stats --no-stream --format "table {{.ID}}\t{{.CPUPerc}}"
-docker inspect --format "{{.HostConfig.NanoCpus}}" <container_id>
+java -cp out SyntheticDatasetGenerator Dataset-Sintetik 10000 3
 ```
 
-CPU% keempat container harus mendekati 13% / 33% / 67% / 100%, dan `NanoCpus` bernilai 133333000 / 333333000 / 666667000 / 1000000000.
+### Langkah 2 — Jalankan sweep (900 run, ± 15 menit)
 
-### Hasil
+Linux / macOS / WSL (bash):
 
-**Uji awal, 50 task, 1 run per algoritma**
-<img width="804" height="182" alt="image" src="https://github.com/user-attachments/assets/fc39267d-da59-4a24-8386-80d2da09beb2" />
+```bash
+java -Xss128m -cp "out:$CP" BatchRunner 2>&1 | grep --line-buffered -E "PROGRES|PERINGATAN|SELESAI|ERROR"
+```
 
-| Algoritma | Makespan real | Ideal (hitungan) | DI | Utilization |
+Windows (PowerShell):
+
+```powershell
+java -Xss128m -cp "out;$cp" BatchRunner 2>&1 | Select-String "PROGRES|PERINGATAN|SELESAI|ERROR"
+```
+
+- Filter `grep` / `Select-String` **penting**: tanpa filter, CloudSim mencetak jutaan baris `INFO`
+  sehingga terminal banjir dan sweep jauh lebih lambat.
+- Selama jalan muncul 300 baris `[PROGRES]`. Baris `[PERINGATAN]` menunjukkan VM gagal
+  dialokasikan atau ada datacenter yang tidak menerima VM.
+- Default: membaca folder `Dataset-Sintetik` di dalam `SOKA_v2` dan menulis `results.csv`.
+  Override: `BatchRunner "<folder-dataset>" "<file-output>"`.
+
+### Langkah 3 — Buat grafik dan ringkasan
+
+```bash
+python3 plot_results.py
+```
+
+Output: `chart_makespan.png`, `chart_selisih_vs_mct.png`, `chart_makespan_diff.png`,
+`chart_imbalance.png`, `chart_utilization.png`, dan `summary.csv`.
+
+### Langkah 4 — (Opsional) Maven
+
+Jika ingin memakai Maven seperti project lama, cukup salin `BatchRunner.java` ke
+`src/main/java/` project lama dan jalankan:
+
+```bash
+mvn compile
+mvn exec:java -Dexec.mainClass="BatchRunner"
+```
+
+---
+
+## 8. Hasil Uji Coba
+
+900 run (3 algoritma × 100 skala × 3 repetisi), seluruh cloudlet berstatus **SUCCESS**.
+
+### 8.1 Grafik utama
+
+![Makespan vs ukuran dataset](chart_makespan.png)
+
+Ketiga garis hampir menumpuk karena selisih makespan antar-algoritma kurang dari 1% pada
+sebagian besar skala. Selisihnya lebih jelas pada grafik berikut:
+
+![Selisih makespan terhadap MCT](chart_selisih_vs_mct.png)
+
+![Deviasi makespan terhadap batas bawah teoritis](chart_makespan_diff.png)
+
+![Degree of imbalance](chart_imbalance.png)
+
+![Utilization](chart_utilization.png)
+
+### 8.2 Tabel ringkasan (rata-rata 3 seed)
+
+| n | MCT | FCFS | Min-Min | Batas bawah |
 |---|---|---|---|---|
-| MCT | 377,48 | 377,47 | 0,2912 | 0,8427 |
-| FCFS | 415,73 | 418,80 | 0,3703 | 0,7942 |
-| Min-Min | 426,32 | 427,10 | 0,8207 | 0,6936 |
+| 100 | **1.142,90** | 1.410,53 | 1.191,15 | 1.100,20 |
+| 1.000 | **12.585,59** | 12.680,02 | 12.738,59 | 12.507,34 |
+| 5.000 | **61.574,75** | 61.743,07 | 61.811,19 | 61.290,77 |
+| 10.000 | **122.886,38** | 123.245,80 | 123.330,43 | 122.320,14* |
 
-**Run penuh, 1.000 task, rata-rata ± std dari TBD run**
+(makespan, detik, rata-rata 3 seed; tabel lengkap mean ± std ada di `summary.csv`)
 
-<img width="799" height="187" alt="image" src="https://github.com/user-attachments/assets/255876c2-0f96-4b08-b896-5e85db71b557" />
+\* batas bawah rata-rata 3 seed; per seed dihitung dari ΣMI masing-masing dataset.
 
-| Algoritma | Makespan real (mean ± std) | Ideal | CloudSim | DI | Utilization |
-|---|---|---|---|---|---|
-| MCT | TBD | 7.634,80 | 7.690 | TBD | TBD |
-| FCFS | TBD | 7.628,47 | 7.724 | TBD | TBD |
-| Min-Min | TBD | 7.686,67 | 7.781 | TBD | TBD |
+### 8.3 Analisis
 
-> Isi `TBD` dari keluaran `summarize.py`.
+1. **MCT terbaik pada rata-rata 3 seed di seluruh 100 skala.** Rata-rata, FCFS 0,83% lebih
+   lambat dan Min-Min 0,55% lebih lambat dari MCT. Selisih FCFS dan Min-Min terhadap MCT ditunjukkan `chart_selisih_vs_mct.png`. Pada run individual (300 run), MCT terendah
+   di 296 run; 4 run lainnya dimenangkan FCFS (n=200 rep 3, n=400 rep 2, n=1.300 rep 2) atau
+   Min-Min (n=900 rep 2).
 
-### Analisis
+2. **Ketiga algoritma mendekati batas bawah teoritis.** Deviasi makespan
+   terhadap ΣMI/ΣMIPS (chart `chart_makespan_diff.png`) membaik seiring n:
+   MCT 3,89% → 0,46%, FCFS 28,35% → 0,76%, Min-Min 8,28% → 0,83% (dari n=100
+   ke n=10.000). Rata-rata deviasi: MCT **0,59%**, FCFS 1,43%, Min-Min 1,14%.
+   MCT selalu paling dekat dengan batas bawah di seluruh rentang n.
 
-Isi setelah run penuh. Poin yang perlu dijawab:
+3. **Deviasi kecil di n besar bukan kebetulan.** Dengan beban total jauh
+   melebihi kapasitas (utilization ≈ 99%), pembagian beban greedy konvergen ke
+   solusi nyaris optimal; sisa deviasi <1% berasal dari fragmentasi terakhir
+   (task terbesar di tiap VM) dan jeda event bawaan CloudSim Plus.
 
-1. Apakah urutan algoritma pada eksekusi real sama dengan di CloudSim?
-2. Seberapa besar selisih makespan real terhadap nilai ideal dan terhadap CloudSim (dalam persen)?
-3. Apakah selisih antar-algoritma lebih besar dari standar deviasi antar-run? Jika tidak, perbedaannya tidak signifikan secara statistik dan itu perlu ditulis apa adanya.
+4. **DI turun drastis dengan n, dan kini membedakan algoritma.** Rata-rata seluruh skala:
+   MCT **0,0056** < FCFS 0,0115 < Min-Min 0,0259. Pada rata-rata 3 seed, DI MCT paling rendah
+   di 84 dari 100 skala (FCFS 13, Min-Min 3), jadi MCT paling seimbang secara umum, bukan di
+   setiap skala. DI MCT turun dari 0,0968 (n=100) ke 0,0006
+   (n=10.000); makin banyak task, makin halus pembagian beban antar VM.
 
-### Keterbatasan
+5. **Utilization.** MCT 99,5% > FCFS 99,1% > Min-Min 98,6% (rata-rata seluruh skala).
+   Min-Min lebih rendah terutama pada n kecil (n=100 ≈ 82,6%) karena cenderung
+   menumpuk task kecil ke VM tercepat sehingga VM lain menganggur di awal run.
 
-- Penjadwalan masih **offline**: semua task diassign di awal dan dianggap tiba di $t = 0$.
-- "VM" adalah container pada **satu mesin fisik** yang berbagi kernel, sehingga ada noise antar-container yang tidak ada pada VM terpisah.
-- Beban hanya **CPU-bound**. RAM, I/O, dan jaringan tidak dimodelkan, begitu pula kolom `pesramMB` dan `priority` pada dataset.
-- Waktu dipercepat dengan faktor $S = 50$. Overhead tetap (baca `stdin`, pencatatan waktu) ikut terkalikan $S$ saat dikonversi ke detik simulasi.
-- Estimasi waktu eksekusi dianggap akurat ($ET = L / \mathrm{MIPS}$), tanpa variasi runtime.
+6. **Variansi antar seed.** Std makespan MCT pada n=10.000 ±1.833,68 s (1,49% dari mean);
+   pada n besar rata-rata 3 repetisi stabil dan peringkat antar-algoritma konsisten.
+   Variansi lebih besar di n kecil karena subset awal tiap seed punya komposisi kelas
+   beban yang lebih "acak".
 
-### Struktur berkas
+### 8.4 Perbandingan dengan hasil lama (n = 1.000, GoCJ)
 
-```
-worker.py        # dijalankan di dalam tiap container
-dispatcher.py    # penjadwalan + orkestrasi container + perhitungan metrik
-summarize.py     # ringkasan mean ± std dari results.csv
-results.csv      # satu baris per run
-real_*.csv       # detail per task (task, vm, start, end)
-```
+| Algoritma | GoCJ (versi lama) | Dataset sintetis (baru, n=1.000) |
+|---|---|---|
+| MCT | 7.690,06 | 12.585,59 |
+| FCFS | 7.724,00 | 12.680,02 |
+| Min-Min | 7.781,37 | 12.738,59 |
 
-## **Referensi**
+Urutan pada n=1.000 sama (MCT < FCFS < Min-Min). Nilai absolut berbeda karena dataset dan
+total beban berbeda (GoCJ ≈ 121.815 MI/task; sintetis ≈ 196.000 MI/task) — bukan
+karena perubahan logika simulasi. Urutan FCFS vs Min-Min **tidak konsisten di semua skala**:
+pada rata-rata 3 seed FCFS lebih cepat di 77 dari 100 skala, sedangkan Min-Min lebih cepat di
+23 skala (12 di antaranya pada n ≤ 1.600; mis. n=100: Min-Min 1.191,15 vs FCFS 1.410,53).
 
-- Braun, T.D., Siegel, H.J., Beck, N., Bölöni, L.L., Maheswaran, M., et al. (2001). A comparison of eleven static heuristics for mapping a class of independent tasks onto heterogeneous distributed computing systems. *Journal of Parallel and Distributed Computing*, 61(6), 810–837.
-- Calheiros, R.N., Ranjan, R., Beloglazov, A., De Rose, C.A.F., Buyya, R. (2011). CloudSim: a toolkit for modeling and simulation of cloud computing environments and evaluation of resource provisioning algorithms. *Software: Practice and Experience*, 41(1), 23–50.
-- Hussain, A., Aleem, M. (2018). GoCJ: Google Cloud Jobs Dataset for Distributed and Cloud Computing Infrastructures. *Data*, 3(4), 38. https://doi.org/10.3390/data3040038
-- Silva Filho, M.C., Oliveira, R.L., Monteiro, C.C., Inácio, P.R.M., Freire, M.M. (2017). CloudSim Plus: a cloud computing simulation framework pursuing software engineering principles for improved modularity, extensibility and correctness. *IFIP/IEEE IM*, Lisbon.
+---
+
+## 9. Keterbatasan
+
+- Dataset masih di-truncate dari 10.000 task pertama per seed; skala kecil (n<1.000)
+  memakai subset awal, sehingga karakter beban tiap n tidak identik (terlihat pada
+  std yang lebih besar di n=500).
+- Penjadwalan offline: semua task dianggap tiba di t=0.
+- Estimasi waktu eksekusi diasumsikan akurat (ET = length/MIPS), tanpa noise runtime.
+- Total cost belum dimodelkan.
+
+---
+
+## 10. Referensi
+
+- Calheiros, R.N., et al. (2011). *CloudSim: A toolkit for modeling and simulation of cloud computing environments*. Software: Practice and Experience, 41(1), 23–50.
+- Silva Filho, M.C., et al. (2017). *CloudSim Plus: A cloud computing simulation framework pursuing software engineering principles*. IFIP/IEEE IM, Lisbon.
+- Braun, T.D., et al. (2001). *A comparison of eleven static heuristics for mapping a class of independent tasks onto heterogeneous distributed computing systems*. JPDC, 61(6), 810–837.
+- Hussain, A., Aleem, M. (2018). *GoCJ: Google Cloud Jobs Dataset*. Data, 3(4), 38.
